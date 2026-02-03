@@ -24,9 +24,10 @@ st.markdown("""
 # --- GERENCIAMENTO DE ESTADO ---
 if 'page' not in st.session_state: st.session_state.page = 'login'
 if 'user' not in st.session_state: st.session_state.user = None
-if 'map_center' not in st.session_state: st.session_state.map_center = [-14.2350, -51.9253] # Centro do Brasil
-if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 4
-if 'selected_location_text' not in st.session_state: st.session_state.selected_location_text = ""
+if 'map_center' not in st.session_state: st.session_state.map_center = [-12.2716, -38.9631] # Centro de Feira de Santana (Exemplo)
+if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
+if 'selected_location_link' not in st.session_state: st.session_state.selected_location_link = ""
+if 'selected_address_text' not in st.session_state: st.session_state.selected_address_text = ""
 
 def navigate_to(page):
     st.session_state.page = page
@@ -35,15 +36,15 @@ def navigate_to(page):
 # --- FUNÇÕES AUXILIARES DE MAPA ---
 def get_address_from_coords(lat, lon):
     try:
-        geolocator = Nominatim(user_agent="app_orcamentos_melissa")
+        geolocator = Nominatim(user_agent="app_orcamentos_melissa_v2")
         location = geolocator.reverse(f"{lat}, {lon}", timeout=10)
-        return location.address if location else f"{lat}, {lon}"
+        return location.address if location else "Endereço não identificado"
     except:
-        return f"Coordenadas: {lat}, {lon}"
+        return "Endereço não identificado"
 
 def get_coords_from_address(address):
     try:
-        geolocator = Nominatim(user_agent="app_orcamentos_melissa")
+        geolocator = Nominatim(user_agent="app_orcamentos_melissa_v2")
         location = geolocator.geocode(address, timeout=10)
         if location:
             return location.latitude, location.longitude
@@ -140,9 +141,10 @@ def home_screen():
     with col1:
         if st.button("➕ Novo Orçamento", type="primary", use_container_width=True):
             # Reseta o mapa ao iniciar novo orcamento
-            st.session_state.map_center = [-14.2350, -51.9253]
-            st.session_state.map_zoom = 4
-            st.session_state.selected_location_text = ""
+            st.session_state.map_center = [-12.2716, -38.9631]
+            st.session_state.map_zoom = 13
+            st.session_state.selected_location_link = ""
+            st.session_state.selected_address_text = ""
             navigate_to('new_budget')
     with col2:
         if st.button("📋 Meus Pedidos", use_container_width=True):
@@ -156,61 +158,76 @@ def home_screen():
 def new_budget_screen():
     st.subheader("Solicitar Novo Orçamento")
     
-    # --- LÓGICA DO MAPA ---
     st.markdown("### 1. Localização do Terreno")
-    st.info("Pesquise sua cidade/rua ou clique no mapa para marcar o local exato.")
+    st.info("Digite o nome da rua/cidade abaixo e clique em 'Buscar'. Depois, clique no ponto exato no mapa.")
     
-    search_query = st.text_input("🔍 Pesquisar endereço (Ex: Rua das Flores, São Paulo)", key="search_box")
-    
-    # Botão de busca manual para atualizar o centro do mapa
-    if st.button("Buscar no Mapa") and search_query:
-        coords = get_coords_from_address(search_query)
-        if coords:
-            st.session_state.map_center = [coords[0], coords[1]]
-            st.session_state.map_zoom = 16
-        else:
-            st.warning("Endereço não encontrado.")
+    col_search, col_btn = st.columns([4, 1])
+    with col_search:
+        search_query = st.text_input("Pesquisar endereço", placeholder="Ex: Av. Getúlio Vargas, Feira de Santana", label_visibility="collapsed")
+    with col_btn:
+        btn_buscar = st.button("🔍 Buscar")
 
-    # Criação do Mapa
-    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+    if btn_buscar and search_query:
+        with st.spinner("Buscando..."):
+            coords = get_coords_from_address(search_query)
+            if coords:
+                st.session_state.map_center = [coords[0], coords[1]]
+                st.session_state.map_zoom = 18
+            else:
+                st.warning("Endereço não encontrado. Tente ser mais específico.")
+
+    # Criação do Mapa com visual "Google Híbrido" (Satélite + Ruas)
+    m = folium.Map(
+        location=st.session_state.map_center, 
+        zoom_start=st.session_state.map_zoom,
+        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        attr="Google Maps"
+    )
     
     # Adiciona marcador se já tiver selecionado algo
-    if st.session_state.selected_location_text:
-        # Tenta extrair lat/long do link se possível, ou usa o centro atual
+    if st.session_state.selected_location_link:
+        # Extrai lat/lon do estado atual para mostrar o marcador
         folium.Marker(
             st.session_state.map_center, 
             popup="Local Selecionado", 
-            icon=folium.Icon(color="green", icon="check")
+            icon=folium.Icon(color="red", icon="map-marker", prefix='fa')
         ).add_to(m)
 
     # Exibe o mapa e captura o clique
-    map_data = st_folium(m, height=400, width=700)
+    st.markdown("**Clique no mapa para confirmar o local:**")
+    map_data = st_folium(m, height=450, width="100%")
 
     # Lógica ao Clicar no Mapa
     if map_data.get("last_clicked"):
         lat = map_data["last_clicked"]["lat"]
         lng = map_data["last_clicked"]["lng"]
         
-        # Atualiza o estado apenas se mudou (para evitar loop)
-        if [lat, lng] != st.session_state.map_center:
+        # Verifica se mudou a posição para evitar recarregar sem necessidade
+        # Usamos uma pequena tolerância float
+        if abs(lat - st.session_state.map_center[0]) > 0.00001 or abs(lng - st.session_state.map_center[1]) > 0.00001:
             st.session_state.map_center = [lat, lng]
-            st.session_state.map_zoom = 18 # Aproxima ao clicar
             
-            # Gera o link do Google Maps
+            # Gera o link do Google Maps LIMPO (sem texto extra)
             gmaps_link = f"https://www.google.com/maps?q={lat},{lng}"
             
-            # Tenta pegar o nome da rua
+            # Busca o endereço para mostrar na tela (apenas visualização)
             address_name = get_address_from_coords(lat, lng)
             
-            st.session_state.selected_location_text = f"{gmaps_link} | ({address_name})"
+            st.session_state.selected_location_link = gmaps_link
+            st.session_state.selected_address_text = address_name
             st.rerun()
+
+    # Mostra o endereço encontrado apenas como texto informativo
+    if st.session_state.selected_address_text:
+        st.caption(f"📍 Endereço aproximado: {st.session_state.selected_address_text}")
 
     # Formulário Principal
     with st.form("budget_form"):
-        # Campo de localização preenchido automaticamente
-        localizacao = st.text_input("Link da Localização (Preenchido pelo mapa)", 
-                                  value=st.session_state.selected_location_text,
-                                  placeholder="Clique no mapa acima para preencher automaticamente")
+        # Campo de localização recebe APENAS o link (corrige o erro do print)
+        localizacao = st.text_input("Link da Localização", 
+                                  value=st.session_state.selected_location_link,
+                                  placeholder="Selecione no mapa acima para preencher automaticamente",
+                                  help="Este é o link exato que usaremos para visitar seu terreno.")
         
         st.markdown("---")
         medidas = st.text_input("2. Medidas do Terreno", placeholder="Ex: 10m frente x 20m fundo")
@@ -223,11 +240,11 @@ def new_budget_screen():
 
         descricao = st.text_area("4. O que você deseja fazer?", placeholder="Descreva sua ideia: casa, muro, reforma, quantidade de quartos...")
         
-        submitted = st.form_submit_button("Enviar Solicitação")
+        submitted = st.form_submit_button("Enviar Solicitação", type="primary")
         
         if submitted:
             if not localizacao or not medidas or not descricao:
-                st.error("Preencha todos os campos obrigatórios (Não esqueça de selecionar o local no mapa).")
+                st.error("Por favor, preencha a Localização (clicando no mapa), as Medidas e a Descrição.")
             else:
                 data = {
                     "user_email": st.session_state.user['email'],
@@ -237,7 +254,7 @@ def new_budget_screen():
                     "descricao": descricao,
                     "status": "Pendente"
                 }
-                with st.spinner("Enviando informações e fazendo upload das fotos (isso pode demorar um pouco)..."):
+                with st.spinner("Enviando informações e fazendo upload das fotos..."):
                     db.save_budget(data, fotos)
                 st.success("Orçamento enviado com sucesso!")
                 time.sleep(2)
@@ -269,11 +286,8 @@ def history_screen():
             if 'edit_mode' not in st.session_state: st.session_state.edit_mode = False
             
             if not st.session_state.edit_mode:
-                # Tenta mostrar link clicavel
-                st.markdown(f"**Localização:** {item['localizacao']}")
-                if "http" in item['localizacao']:
-                    link_url = item['localizacao'].split("|")[0].strip()
-                    st.markdown(f"[Abrir no Google Maps]({link_url})")
+                st.markdown(f"**Localização:** [Abrir no Mapa]({item['localizacao']})")
+                st.text(f"Link: {item['localizacao']}")
 
                 st.write(f"**Medidas:** {item['medidas']}")
                 st.write(f"**Descrição:** {item['descricao']}")
