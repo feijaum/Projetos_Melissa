@@ -6,7 +6,7 @@ import os
 import json
 import datetime
 import streamlit as st
-import re # Importando regex para limpeza da chave
+import re
 
 # Importações do Google
 import gspread
@@ -22,9 +22,10 @@ GOOGLE_CREDENTIALS_FILE = 'credentials.json'
 SHEET_NAME = 'Sistema_Orcamentos'
 DRIVE_FOLDER_NAME = 'Projetos_Melissa_Arquivos'
 
-# Configurações de Email
-EMAIL_SENDER = "seu.email.real@gmail.com" # <--- MANTENHA SEU EMAIL AQUI
-EMAIL_PASSWORD = "sua_senha_de_app"       # <--- MANTENHA SUA SENHA AQUI
+# Configurações de Email (Para recuperação de senha)
+# PREENCHA AQUI COM SEUS DADOS REAIS DO GMAIL
+EMAIL_SENDER = "seu.email.real@gmail.com" 
+EMAIL_PASSWORD = "sua_senha_de_app"       
 
 class DataManager:
     def __init__(self):
@@ -77,36 +78,32 @@ class DataManager:
                     self.sheet = self.client.open(SHEET_NAME)
                 except gspread.SpreadsheetNotFound:
                     self.sheet = self.client.create(SHEET_NAME)
+                    # Opcional: Compartilhar com seu email pessoal se criar nova
+                    # self.sheet.share('seu.email@gmail.com', perm_type='user', role='writer')
 
                 self._setup_drive_folder()
 
             except Exception as e:
-                # Mostra o erro detalhado mas ativa o modo MOCK para o app não travar (tela branca no Safari)
-                st.error(f"⚠️ Erro de Conexão Google: {e}. O app funcionará em modo OFFLINE para testes.")
+                # Mostra o erro mas ativa MOCK para não travar
+                st.error(f"⚠️ Erro de Conexão Google: {e}. O sistema está OFFLINE.")
                 MOCK_MODE = True
                 self._init_local_db()
         else:
             self._init_local_db()
 
     def _clean_private_key(self, key):
-        """
-        Limpa e formata a chave privada para evitar erros de JWT.
-        Resolve problemas de \\n literais, aspas extras e formatação do Secrets.
-        """
-        # 1. Remove aspas extras no início/fim se houver (erro comum de copy-paste)
+        """Limpa a chave privada para evitar erro de JWT Invalid Signature"""
+        # Remove aspas extras
         key = key.strip().strip('"').strip("'")
         
-        # 2. Se a chave tiver \\n literais (duas barras), substitui por \n real
+        # Substitui \\n literais por quebras de linha reais
         if "\\n" in key:
             key = key.replace("\\n", "\n")
             
-        # 3. Garante que os cabeçalhos estão em linhas separadas
-        # Se por acaso tudo virou uma linha só sem \n, tentamos forçar a quebra
-        if "\n" not in key and "-----BEGIN PRIVATE KEY-----" in key:
+        # Garante cabeçalhos em linhas separadas
+        if "-----BEGIN PRIVATE KEY-----" in key and "\n" not in key:
             key = key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
             key = key.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
-            # Tenta separar o conteúdo base64 se estiver colado (lógica de emergência)
-            # Geralmente o replace do passo 2 resolve, mas isso é garantia extra.
             
         return key
 
@@ -123,30 +120,25 @@ class DataManager:
             files = results.get('files', [])
 
             if not files:
-                file_metadata = {
-                    'name': DRIVE_FOLDER_NAME,
-                    'mimeType': 'application/vnd.google-apps.folder'
-                }
+                file_metadata = {'name': DRIVE_FOLDER_NAME, 'mimeType': 'application/vnd.google-apps.folder'}
                 file = self.drive_service.files().create(body=file_metadata, fields='id').execute()
                 self.drive_folder_id = file.get('id')
             else:
                 self.drive_folder_id = files[0]['id']
         except Exception as e:
-            # Não trava o app se o Drive falhar, apenas avisa
-            print(f"Aviso Drive: {e}")
+            print(f"Erro Drive: {e}")
 
     def _make_file_public(self, file_id):
         try:
-            user_permission = {'type': 'anyone', 'role': 'reader'}
             self.drive_service.permissions().create(
                 fileId=file_id,
-                body=user_permission,
+                body={'type': 'anyone', 'role': 'reader'},
                 fields='id',
             ).execute()
-        except Exception as e:
-            print(f"Erro permissão: {e}")
+        except Exception:
+            pass
 
-    # --- FUNÇÕES DE NEGÓCIO (Mantidas iguais) ---
+    # --- FUNÇÕES DE NEGÓCIO ---
     def get_users(self):
         if MOCK_MODE:
             with open(self.mock_users_file, 'r') as f: return pd.DataFrame(json.load(f))
@@ -158,11 +150,8 @@ class DataManager:
                     worksheet = self.sheet.add_worksheet(title="Usuarios", rows=100, cols=10)
                     worksheet.append_row(["nome", "sobrenome", "telefone", "email", "senha"])
                     return pd.DataFrame(columns=["nome", "sobrenome", "telefone", "email", "senha"])
-                
-                records = worksheet.get_all_records()
-                return pd.DataFrame(records)
-            except Exception as e:
-                st.error(f"Erro leitura usuarios: {e}")
+                return pd.DataFrame(worksheet.get_all_records())
+            except:
                 return pd.DataFrame()
 
     def register_user(self, user_data):
@@ -181,8 +170,7 @@ class DataManager:
                 worksheet = self.sheet.add_worksheet(title="Usuarios", rows=100, cols=10)
                 worksheet.append_row(["nome", "sobrenome", "telefone", "email", "senha"])
             
-            row = [user_data['nome'], user_data['sobrenome'], user_data['telefone'], user_data['email'], user_data['senha']]
-            worksheet.append_row(row)
+            worksheet.append_row([user_data['nome'], user_data['sobrenome'], user_data['telefone'], user_data['email'], user_data['senha']])
         return True, "Cadastro realizado!"
 
     def check_login(self, email, password):
@@ -200,19 +188,18 @@ class DataManager:
         user = df[df['email'] == email]
         if user.empty: return False, "Email não encontrado."
         
+        if "seu.email.real" in EMAIL_SENDER:
+            return False, "O sistema ainda não configurou o email de envio."
+
         try:
             nome = user.iloc[0]['nome']
             senha = str(user.iloc[0]['senha'])
             
-            if "seu.email.real" in EMAIL_SENDER:
-                return False, "Configurar email no backend.py"
-
             msg = MIMEMultipart()
             msg['From'] = EMAIL_SENDER
             msg['To'] = email
             msg['Subject'] = "Recuperação de Senha"
-            body = f"Olá {nome},\n\nSua senha é: {senha}\n\nAtenciosamente,\nEquipe."
-            msg.attach(MIMEText(body, 'plain'))
+            msg.attach(MIMEText(f"Olá {nome},\n\nSua senha é: {senha}", 'plain'))
             
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
@@ -236,8 +223,8 @@ class DataManager:
                     df = pd.DataFrame(records)
                 except gspread.WorksheetNotFound:
                     return pd.DataFrame()
-            except Exception as e:
-                return pd.DataFrame() # Retorna vazio silenciosamente para não quebrar UI
+            except:
+                return pd.DataFrame()
 
         if df.empty: return df
         if user_email: return df[df['user_email'] == user_email]
@@ -248,9 +235,7 @@ class DataManager:
         if images_files:
             for img in images_files:
                 if MOCK_MODE:
-                    # Mock upload
-                    path = f"mock_{img.name}" 
-                    image_links.append(path)
+                    image_links.append(f"mock_{img.name}")
                 else:
                     try:
                         file_metadata = {'name': f"{budget_data['user_nome']}_{img.name}", 'parents': [self.drive_folder_id]}
@@ -258,10 +243,9 @@ class DataManager:
                         file = self.drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
                         file_id = file.get('id')
                         self._make_file_public(file_id)
-                        link = f"https://drive.google.com/uc?id={file_id}"
-                        image_links.append(link)
-                    except Exception as e:
-                        st.error(f"Erro imagem: {e}")
+                        image_links.append(f"https://drive.google.com/uc?id={file_id}")
+                    except:
+                        pass
 
         budget_data['imagens'] = " | ".join(image_links)
         budget_data['data_criacao'] = str(datetime.datetime.now())
@@ -291,7 +275,6 @@ class DataManager:
         return True
 
     def update_budget(self, budget_id, new_data):
-        # Lógica simplificada de atualização
         if MOCK_MODE:
             with open(self.mock_budgets_file, 'r') as f: data = json.load(f)
             for item in data:
@@ -306,6 +289,6 @@ class DataManager:
                     if 'localizacao' in new_data: worksheet.update_cell(cell.row, 4, new_data['localizacao'])
                     if 'medidas' in new_data: worksheet.update_cell(cell.row, 5, new_data['medidas'])
                     if 'descricao' in new_data: worksheet.update_cell(cell.row, 6, new_data['descricao'])
-            except Exception as e:
-                st.error(f"Erro update: {e}")
+            except:
+                pass
         return True
