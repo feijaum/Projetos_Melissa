@@ -46,16 +46,26 @@ class DataManager:
                 ]
                 
                 # LÓGICA HÍBRIDA: Tenta arquivo local OU Secrets do Streamlit Cloud
-                creds = None
+                service_account_info = None
+                
                 if os.path.exists(GOOGLE_CREDENTIALS_FILE):
-                    creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
+                    # Carrega do arquivo JSON manualmente para podermos corrigir a chave
+                    with open(GOOGLE_CREDENTIALS_FILE, "r") as f:
+                        service_account_info = json.load(f)
                 elif "gcp_service_account" in st.secrets:
-                    # Se não tiver arquivo, tenta pegar dos Segredos do Streamlit (Configuração de Nuvem)
-                    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+                    # Carrega dos Secrets (convertendo para dict padrão)
+                    service_account_info = dict(st.secrets["gcp_service_account"])
                 else:
                     raise FileNotFoundError(f"Arquivo '{GOOGLE_CREDENTIALS_FILE}' não encontrado e secrets não configurados.")
 
-                self.creds = creds
+                # --- CORREÇÃO CRÍTICA PARA 'INVALID JWT SIGNATURE' ---
+                # Corrige a formatação da chave privada (substitui \\n literais por quebras de linha reais)
+                # Isso resolve o problema de formatação no Streamlit Cloud
+                if service_account_info and "private_key" in service_account_info:
+                    service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
+
+                # Cria as credenciais a partir do dicionário corrigido
+                self.creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
                 
                 # Cliente do Sheets (gspread)
                 self.client = gspread.authorize(self.creds)
