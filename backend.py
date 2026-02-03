@@ -22,10 +22,9 @@ GOOGLE_CREDENTIALS_FILE = 'credentials.json'
 SHEET_NAME = 'Sistema_Orcamentos'
 DRIVE_FOLDER_NAME = 'Projetos_Melissa_Arquivos'
 
-# Configurações de Email (Para recuperação de senha)
-# PREENCHA AQUI COM SEUS DADOS REAIS DO GMAIL
-EMAIL_SENDER = "seu.email.real@gmail.com" 
-EMAIL_PASSWORD = "sua_senha_de_app"       
+# Configurações de Email
+EMAIL_SENDER = "seu.email.real@gmail.com" # <--- MANTENHA SEU EMAIL AQUI
+EMAIL_PASSWORD = "sua_senha_de_app"       # <--- MANTENHA SUA SENHA AQUI
 
 class DataManager:
     def __init__(self):
@@ -54,6 +53,7 @@ class DataManager:
 
                 # 2. Se não achou arquivo, tenta Secrets (Streamlit Cloud)
                 if not service_account_info and "gcp_service_account" in st.secrets:
+                    # Converte o objeto Secrets para um dicionário Python normal
                     service_account_info = dict(st.secrets["gcp_service_account"])
 
                 if not service_account_info:
@@ -78,13 +78,10 @@ class DataManager:
                     self.sheet = self.client.open(SHEET_NAME)
                 except gspread.SpreadsheetNotFound:
                     self.sheet = self.client.create(SHEET_NAME)
-                    # Opcional: Compartilhar com seu email pessoal se criar nova
-                    # self.sheet.share('seu.email@gmail.com', perm_type='user', role='writer')
 
                 self._setup_drive_folder()
 
             except Exception as e:
-                # Mostra o erro mas ativa MOCK para não travar
                 st.error(f"⚠️ Erro de Conexão Google: {e}. O sistema está OFFLINE.")
                 MOCK_MODE = True
                 self._init_local_db()
@@ -93,14 +90,18 @@ class DataManager:
 
     def _clean_private_key(self, key):
         """Limpa a chave privada para evitar erro de JWT Invalid Signature"""
-        # Remove aspas extras
+        if not key: return ""
+        
+        # Remove aspas extras que podem ter vindo da cópia
         key = key.strip().strip('"').strip("'")
         
+        # Correção de escape duplo (comum em TOML/JSON mal formatado)
+        key = key.replace("\\\\n", "\n")
+        
         # Substitui \\n literais por quebras de linha reais
-        if "\\n" in key:
-            key = key.replace("\\n", "\n")
+        key = key.replace("\\n", "\n")
             
-        # Garante cabeçalhos em linhas separadas
+        # Garante cabeçalhos em linhas separadas se tudo virou uma linha só
         if "-----BEGIN PRIVATE KEY-----" in key and "\n" not in key:
             key = key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
             key = key.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
@@ -126,7 +127,8 @@ class DataManager:
             else:
                 self.drive_folder_id = files[0]['id']
         except Exception as e:
-            print(f"Erro Drive: {e}")
+            # Silencia erro de Drive no modo offline para não assustar o usuário
+            if not MOCK_MODE: print(f"Aviso Drive: {e}")
 
     def _make_file_public(self, file_id):
         try:
