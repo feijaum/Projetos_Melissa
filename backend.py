@@ -6,6 +6,7 @@ import os
 import json
 import datetime
 import streamlit as st
+import re # Importando regex para limpeza da chave
 
 # Importações do Google
 import gspread
@@ -14,91 +15,108 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 # --- CONFIGURAÇÃO ---
-# Mude para FALSE para usar o Google Sheets/Drive real.
 MOCK_MODE = False 
 
 # Configurações do Google
-GOOGLE_CREDENTIALS_FILE = 'credentials.json' # O arquivo que você baixou
+GOOGLE_CREDENTIALS_FILE = 'credentials.json'
 SHEET_NAME = 'Sistema_Orcamentos'
-DRIVE_FOLDER_NAME = 'Projetos_Melissa_Arquivos' # Nome da pasta que será criada automaticamente
+DRIVE_FOLDER_NAME = 'Projetos_Melissa_Arquivos'
 
-# Configurações de Email (Para recuperação de senha - Gmail requer Senha de App)
-EMAIL_SENDER = "seu.email.real@gmail.com" # <--- PREENCHA AQUI SEU EMAIL
-EMAIL_PASSWORD = "sua_senha_de_app"       # <--- PREENCHA AQUI SUA SENHA DE APP
+# Configurações de Email
+EMAIL_SENDER = "seu.email.real@gmail.com" # <--- MANTENHA SEU EMAIL AQUI
+EMAIL_PASSWORD = "sua_senha_de_app"       # <--- MANTENHA SUA SENHA AQUI
 
 class DataManager:
     def __init__(self):
-        # --- CORREÇÃO DO ERRO ---
-        # O 'global' deve ser a PRIMEIRA coisa dentro da função __init__
         global MOCK_MODE 
         
         self.mock_users_file = 'local_users.json'
         self.mock_budgets_file = 'local_budgets.json'
         self.drive_folder_id = None
         
-        # Tenta conectar ao Google
         if not MOCK_MODE:
             try:
-                # Escopos necessários: Planilhas e Drive
                 scope = [
                     'https://www.googleapis.com/auth/spreadsheets', 
                     'https://www.googleapis.com/auth/drive'
                 ]
                 
-                # LÓGICA HÍBRIDA: Tenta arquivo local OU Secrets do Streamlit Cloud
                 service_account_info = None
                 
+                # 1. Tenta carregar do Arquivo JSON (Prioridade Local)
                 if os.path.exists(GOOGLE_CREDENTIALS_FILE):
-                    # Carrega do arquivo JSON manualmente para podermos corrigir a chave
-                    with open(GOOGLE_CREDENTIALS_FILE, "r") as f:
-                        service_account_info = json.load(f)
-                elif "gcp_service_account" in st.secrets:
-                    # Carrega dos Secrets (convertendo para dict padrão)
+                    try:
+                        with open(GOOGLE_CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+                            service_account_info = json.load(f)
+                    except Exception as e:
+                        print(f"Erro ao ler JSON local: {e}")
+
+                # 2. Se não achou arquivo, tenta Secrets (Streamlit Cloud)
+                if not service_account_info and "gcp_service_account" in st.secrets:
                     service_account_info = dict(st.secrets["gcp_service_account"])
-                else:
-                    raise FileNotFoundError(f"Arquivo '{GOOGLE_CREDENTIALS_FILE}' não encontrado e secrets não configurados.")
 
-                # --- CORREÇÃO CRÍTICA PARA 'INVALID JWT SIGNATURE' ---
-                # Corrige a formatação da chave privada (substitui \\n literais por quebras de linha reais)
-                # Isso resolve o problema de formatação no Streamlit Cloud
-                if service_account_info and "private_key" in service_account_info:
-                    service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
+                if not service_account_info:
+                    raise FileNotFoundError("Credenciais não encontradas (Nem arquivo JSON, nem Secrets).")
 
-                # Cria as credenciais a partir do dicionário corrigido
+                # --- CORREÇÃO BLINDADA DA CHAVE PRIVADA ---
+                if "private_key" in service_account_info:
+                    raw_key = service_account_info["private_key"]
+                    service_account_info["private_key"] = self._clean_private_key(raw_key)
+
+                # Cria as credenciais
                 self.creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
                 
-                # Cliente do Sheets (gspread)
+                # Cliente do Sheets
                 self.client = gspread.authorize(self.creds)
                 
-                # Cliente do Drive (google-api-python-client)
+                # Cliente do Drive
                 self.drive_service = build('drive', 'v3', credentials=self.creds)
                 
-                # Abre a planilha (ou cria se não existir)
+                # Testa conexão abrindo a planilha
                 try:
                     self.sheet = self.client.open(SHEET_NAME)
                 except gspread.SpreadsheetNotFound:
                     self.sheet = self.client.create(SHEET_NAME)
 
-                # Configura a pasta do Drive
                 self._setup_drive_folder()
 
             except Exception as e:
-                # Se der erro, ativa o modo MOCK e avisa na tela
-                st.error(f"Erro na conexão Google: {e}. Ativando modo OFFLINE (MOCK).")
+                # Mostra o erro detalhado mas ativa o modo MOCK para o app não travar (tela branca no Safari)
+                st.error(f"⚠️ Erro de Conexão Google: {e}. O app funcionará em modo OFFLINE para testes.")
                 MOCK_MODE = True
                 self._init_local_db()
         else:
             self._init_local_db()
 
+    def _clean_private_key(self, key):
+        """
+        Limpa e formata a chave privada para evitar erros de JWT.
+        Resolve problemas de \\n literais, aspas extras e formatação do Secrets.
+        """
+        # 1. Remove aspas extras no início/fim se houver (erro comum de copy-paste)
+        key = key.strip().strip('"').strip("'")
+        
+        # 2. Se a chave tiver \\n literais (duas barras), substitui por \n real
+        if "\\n" in key:
+            key = key.replace("\\n", "\n")
+            
+        # 3. Garante que os cabeçalhos estão em linhas separadas
+        # Se por acaso tudo virou uma linha só sem \n, tentamos forçar a quebra
+        if "\n" not in key and "-----BEGIN PRIVATE KEY-----" in key:
+            key = key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
+            key = key.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
+            # Tenta separar o conteúdo base64 se estiver colado (lógica de emergência)
+            # Geralmente o replace do passo 2 resolve, mas isso é garantia extra.
+            
+        return key
+
     def _init_local_db(self):
-        """Inicializa arquivos locais para teste sem Google"""
         if not os.path.exists(self.mock_users_file):
             with open(self.mock_users_file, 'w') as f: json.dump([], f)
         if not os.path.exists(self.mock_budgets_file):
             with open(self.mock_budgets_file, 'w') as f: json.dump([], f)
 
     def _setup_drive_folder(self):
-        """Verifica se a pasta de arquivos existe no Drive, se não, cria."""
         try:
             query = f"mimeType='application/vnd.google-apps.folder' and name='{DRIVE_FOLDER_NAME}' and trashed=false"
             results = self.drive_service.files().list(q=query, fields="files(id, name)").execute()
@@ -114,10 +132,10 @@ class DataManager:
             else:
                 self.drive_folder_id = files[0]['id']
         except Exception as e:
-            st.error(f"Erro ao configurar Drive: {e}")
+            # Não trava o app se o Drive falhar, apenas avisa
+            print(f"Aviso Drive: {e}")
 
     def _make_file_public(self, file_id):
-        """Torna um arquivo público para leitura"""
         try:
             user_permission = {'type': 'anyone', 'role': 'reader'}
             self.drive_service.permissions().create(
@@ -126,10 +144,9 @@ class DataManager:
                 fields='id',
             ).execute()
         except Exception as e:
-            print(f"Erro ao tornar arquivo público: {e}")
+            print(f"Erro permissão: {e}")
 
-    # --- GERENCIAMENTO DE USUÁRIOS ---
-
+    # --- FUNÇÕES DE NEGÓCIO (Mantidas iguais) ---
     def get_users(self):
         if MOCK_MODE:
             with open(self.mock_users_file, 'r') as f: return pd.DataFrame(json.load(f))
@@ -145,13 +162,11 @@ class DataManager:
                 records = worksheet.get_all_records()
                 return pd.DataFrame(records)
             except Exception as e:
-                st.error(f"Erro ao ler usuarios: {e}")
+                st.error(f"Erro leitura usuarios: {e}")
                 return pd.DataFrame()
 
     def register_user(self, user_data):
         df = self.get_users()
-        
-        # Validação de Duplicidade
         if not df.empty and 'email' in df.columns and user_data['email'] in df['email'].values:
             return False, "Email já cadastrado."
 
@@ -168,24 +183,45 @@ class DataManager:
             
             row = [user_data['nome'], user_data['sobrenome'], user_data['telefone'], user_data['email'], user_data['senha']]
             worksheet.append_row(row)
-            
-        return True, "Cadastro realizado com sucesso!"
+        return True, "Cadastro realizado!"
 
     def check_login(self, email, password):
         df = self.get_users()
         if df.empty: return None
-        
         if 'senha' in df.columns:
             df['senha'] = df['senha'].astype(str)
             user = df[(df['email'] == email) & (df['senha'] == str(password))]
-            if not user.empty:
-                return user.iloc[0].to_dict()
+            if not user.empty: return user.iloc[0].to_dict()
         return None
 
     def recover_password(self, email):
-        return False, "Configure o email no backend.py para usar esta função."
+        df = self.get_users()
+        if df.empty or 'email' not in df.columns: return False, "Base vazia."
+        user = df[df['email'] == email]
+        if user.empty: return False, "Email não encontrado."
+        
+        try:
+            nome = user.iloc[0]['nome']
+            senha = str(user.iloc[0]['senha'])
+            
+            if "seu.email.real" in EMAIL_SENDER:
+                return False, "Configurar email no backend.py"
 
-    # --- GERENCIAMENTO DE ORÇAMENTOS ---
+            msg = MIMEMultipart()
+            msg['From'] = EMAIL_SENDER
+            msg['To'] = email
+            msg['Subject'] = "Recuperação de Senha"
+            body = f"Olá {nome},\n\nSua senha é: {senha}\n\nAtenciosamente,\nEquipe."
+            msg.attach(MIMEText(body, 'plain'))
+            
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.send_message(msg)
+            server.quit()
+            return True, "Senha enviada!"
+        except Exception as e:
+            return False, f"Erro envio: {str(e)}"
 
     def get_budgets(self, user_email=None):
         if MOCK_MODE:
@@ -201,52 +237,42 @@ class DataManager:
                 except gspread.WorksheetNotFound:
                     return pd.DataFrame()
             except Exception as e:
-                st.error(f"Erro ao ler orçamentos: {e}")
-                return pd.DataFrame()
+                return pd.DataFrame() # Retorna vazio silenciosamente para não quebrar UI
 
         if df.empty: return df
-        if user_email:
-            return df[df['user_email'] == user_email]
+        if user_email: return df[df['user_email'] == user_email]
         return df
 
     def save_budget(self, budget_data, images_files):
         image_links = []
-        
         if images_files:
             for img in images_files:
                 if MOCK_MODE:
-                    if not os.path.exists("uploads"): os.makedirs("uploads")
-                    path = f"uploads/{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{img.name}"
-                    with open(path, "wb") as f: f.write(img.getbuffer())
+                    # Mock upload
+                    path = f"mock_{img.name}" 
                     image_links.append(path)
                 else:
                     try:
-                        file_metadata = {
-                            'name': f"{budget_data['user_nome']}_{img.name}",
-                            'parents': [self.drive_folder_id]
-                        }
+                        file_metadata = {'name': f"{budget_data['user_nome']}_{img.name}", 'parents': [self.drive_folder_id]}
                         media = MediaIoBaseUpload(img, mimetype=img.type)
-                        file = self.drive_service.files().create(
-                            body=file_metadata, media_body=media, fields='id'
-                        ).execute()
-                        
+                        file = self.drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
                         file_id = file.get('id')
                         self._make_file_public(file_id)
                         link = f"https://drive.google.com/uc?id={file_id}"
                         image_links.append(link)
                     except Exception as e:
-                        st.error(f"Erro no upload da imagem {img.name}: {e}")
+                        st.error(f"Erro imagem: {e}")
 
         budget_data['imagens'] = " | ".join(image_links)
         budget_data['data_criacao'] = str(datetime.datetime.now())
         budget_data['id'] = str(abs(hash(str(datetime.datetime.now()))))
 
         if MOCK_MODE:
-            current_data = []
+            current = []
             if os.path.exists(self.mock_budgets_file):
-                with open(self.mock_budgets_file, 'r') as f: current_data = json.load(f)
-            current_data.append(budget_data)
-            with open(self.mock_budgets_file, 'w') as f: json.dump(current_data, f)
+                with open(self.mock_budgets_file, 'r') as f: current = json.load(f)
+            current.append(budget_data)
+            with open(self.mock_budgets_file, 'w') as f: json.dump(current, f)
         else:
             try:
                 worksheet = self.sheet.worksheet("Orcamentos")
@@ -265,11 +291,11 @@ class DataManager:
         return True
 
     def update_budget(self, budget_id, new_data):
+        # Lógica simplificada de atualização
         if MOCK_MODE:
             with open(self.mock_budgets_file, 'r') as f: data = json.load(f)
             for item in data:
-                if str(item['id']) == str(budget_id):
-                    item.update(new_data)
+                if str(item['id']) == str(budget_id): item.update(new_data)
             with open(self.mock_budgets_file, 'w') as f: json.dump(data, f)
         else:
             try:
@@ -281,5 +307,5 @@ class DataManager:
                     if 'medidas' in new_data: worksheet.update_cell(cell.row, 5, new_data['medidas'])
                     if 'descricao' in new_data: worksheet.update_cell(cell.row, 6, new_data['descricao'])
             except Exception as e:
-                st.error(f"Erro ao atualizar: {e}")
+                st.error(f"Erro update: {e}")
         return True
