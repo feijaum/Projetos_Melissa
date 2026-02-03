@@ -77,34 +77,53 @@ class DataManager:
                 try:
                     self.sheet = self.client.open(SHEET_NAME)
                 except gspread.SpreadsheetNotFound:
-                    self.sheet = self.client.create(SHEET_NAME)
+                    # Se não achar, tenta criar. Se falhar, avisa.
+                    try:
+                        self.sheet = self.client.create(SHEET_NAME)
+                    except Exception as create_error:
+                        st.error(f"Não foi possível encontrar nem criar a planilha '{SHEET_NAME}'. Verifique se o email do robô tem permissão de EDITOR.")
+                        raise create_error
 
                 self._setup_drive_folder()
 
             except Exception as e:
-                st.error(f"⚠️ Erro de Conexão Google: {e}. O sistema está OFFLINE.")
+                # Mostra o erro detalhado
+                st.error(f"⚠️ Erro de Conexão Google: {e}.")
+                print(f"DEBUG ERRO CONEXÃO: {e}")
+                
+                # Se for erro de JWT, não adianta ir para MOCK, tem que corrigir a chave.
+                if "Invalid JWT" in str(e):
+                    st.warning("DICA: O erro 'Invalid JWT' significa que a 'private_key' no Secrets está formatada errada. Tente copiar novamente sem espaços extras.")
+                
+                st.warning("Ativando modo OFFLINE (MOCK) para não travar o sistema.")
                 MOCK_MODE = True
                 self._init_local_db()
         else:
             self._init_local_db()
 
     def _clean_private_key(self, key):
-        """Limpa a chave privada para evitar erro de JWT Invalid Signature"""
+        """Limpa a chave privada para lidar com erros de formatação do Streamlit Secrets"""
         if not key: return ""
         
-        # Remove aspas extras que podem ter vindo da cópia
+        # 1. Remove aspas e espaços extras das pontas
         key = key.strip().strip('"').strip("'")
         
-        # Correção de escape duplo (comum em TOML/JSON mal formatado)
+        # 2. Corrige escape duplo (comum em TOML)
         key = key.replace("\\\\n", "\n")
         
-        # Substitui \\n literais por quebras de linha reais
+        # 3. Corrige escape simples literal (quando a quebra de linha vira texto \n)
         key = key.replace("\\n", "\n")
-            
-        # Garante cabeçalhos em linhas separadas se tudo virou uma linha só
+        
+        # 4. CASO CRÍTICO: Se a chave virou uma tripa só de texto com espaços em vez de enters
+        # (Acontece muito ao copiar e colar no Windows/Mac)
         if "-----BEGIN PRIVATE KEY-----" in key and "\n" not in key:
+            # Reconstrói os cabeçalhos
             key = key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
             key = key.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
+            # Tenta separar o conteúdo do meio se houver espaços
+            content = key.replace("-----BEGIN PRIVATE KEY-----\n", "").replace("\n-----END PRIVATE KEY-----", "")
+            content = content.replace(" ", "\n") # Assume que espaços deveriam ser quebras no meio da chave
+            key = f"-----BEGIN PRIVATE KEY-----\n{content}\n-----END PRIVATE KEY-----"
             
         return key
 
@@ -127,7 +146,6 @@ class DataManager:
             else:
                 self.drive_folder_id = files[0]['id']
         except Exception as e:
-            # Silencia erro de Drive no modo offline para não assustar o usuário
             if not MOCK_MODE: print(f"Aviso Drive: {e}")
 
     def _make_file_public(self, file_id):
@@ -261,20 +279,33 @@ class DataManager:
             with open(self.mock_budgets_file, 'w') as f: json.dump(current, f)
         else:
             try:
-                worksheet = self.sheet.worksheet("Orcamentos")
-            except:
-                worksheet = self.sheet.add_worksheet(title="Orcamentos", rows=1000, cols=10)
-                worksheet.append_row(["id", "user_email", "user_nome", "localizacao", "medidas", "descricao", "status", "imagens", "data_criacao"])
-            
-            row = [
-                budget_data.get('id', ''), budget_data.get('user_email', ''),
-                budget_data.get('user_nome', ''), budget_data.get('localizacao', ''),
-                budget_data.get('medidas', ''), budget_data.get('descricao', ''),
-                budget_data.get('status', 'Pendente'), budget_data.get('imagens', ''),
-                budget_data.get('data_criacao', '')
-            ]
-            worksheet.append_row(row)
-        return True
+                # Tenta pegar a aba
+                try:
+                    worksheet = self.sheet.worksheet("Orcamentos")
+                except gspread.WorksheetNotFound:
+                    # Se não existir, cria e coloca cabeçalho
+                    worksheet = self.sheet.add_worksheet(title="Orcamentos", rows=1000, cols=10)
+                    worksheet.append_row(["id", "user_email", "user_nome", "localizacao", "medidas", "descricao", "status", "imagens", "data_criacao"])
+                
+                # Prepara a linha de dados
+                row = [
+                    budget_data.get('id', ''), 
+                    budget_data.get('user_email', ''),
+                    budget_data.get('user_nome', ''), 
+                    budget_data.get('localizacao', ''),
+                    budget_data.get('medidas', ''), 
+                    budget_data.get('descricao', ''),
+                    budget_data.get('status', 'Pendente'), 
+                    budget_data.get('imagens', ''),
+                    budget_data.get('data_criacao', '')
+                ]
+                
+                # Salva a linha
+                worksheet.append_row(row)
+                return True
+            except Exception as e:
+                st.error(f"Erro ao salvar na planilha: {e}")
+                return False
 
     def update_budget(self, budget_id, new_data):
         if MOCK_MODE:
