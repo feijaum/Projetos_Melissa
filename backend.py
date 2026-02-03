@@ -28,8 +28,9 @@ EMAIL_PASSWORD = "sua_senha_de_app"       # <--- PREENCHA AQUI SUA SENHA DE APP
 
 class DataManager:
     def __init__(self):
-        # CORREÇÃO: Declarar global no início do método para evitar SyntaxError
-        global MOCK_MODE
+        # --- CORREÇÃO DO ERRO ---
+        # O 'global' deve ser a PRIMEIRA coisa dentro da função __init__
+        global MOCK_MODE 
         
         self.mock_users_file = 'local_users.json'
         self.mock_budgets_file = 'local_budgets.json'
@@ -44,16 +45,17 @@ class DataManager:
                     'https://www.googleapis.com/auth/drive'
                 ]
                 
-                # Verifica se o arquivo existe
-                if not os.path.exists(GOOGLE_CREDENTIALS_FILE):
-                    # Se não existir arquivo, tenta usar st.secrets (caso esteja na nuvem)
-                    if "gcp_service_account" in st.secrets:
-                        service_account_info = st.secrets["gcp_service_account"]
-                        self.creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
-                    else:
-                        raise FileNotFoundError(f"Arquivo '{GOOGLE_CREDENTIALS_FILE}' não encontrado e secrets não configurados.")
+                # LÓGICA HÍBRIDA: Tenta arquivo local OU Secrets do Streamlit Cloud
+                creds = None
+                if os.path.exists(GOOGLE_CREDENTIALS_FILE):
+                    creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
+                elif "gcp_service_account" in st.secrets:
+                    # Se não tiver arquivo, tenta pegar dos Segredos do Streamlit (Configuração de Nuvem)
+                    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
                 else:
-                    self.creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
+                    raise FileNotFoundError(f"Arquivo '{GOOGLE_CREDENTIALS_FILE}' não encontrado e secrets não configurados.")
+
+                self.creds = creds
                 
                 # Cliente do Sheets (gspread)
                 self.client = gspread.authorize(self.creds)
@@ -65,14 +67,14 @@ class DataManager:
                 try:
                     self.sheet = self.client.open(SHEET_NAME)
                 except gspread.SpreadsheetNotFound:
-                    # Se não achar a planilha, cria uma nova
                     self.sheet = self.client.create(SHEET_NAME)
 
                 # Configura a pasta do Drive
                 self._setup_drive_folder()
 
             except Exception as e:
-                st.error(f"Erro ao conectar com Google: {e}. Usando modo OFFLINE temporariamente.")
+                # Se der erro, ativa o modo MOCK e avisa na tela
+                st.error(f"Erro na conexão Google: {e}. Ativando modo OFFLINE (MOCK).")
                 MOCK_MODE = True
                 self._init_local_db()
         else:
@@ -93,7 +95,6 @@ class DataManager:
             files = results.get('files', [])
 
             if not files:
-                # Cria a pasta
                 file_metadata = {
                     'name': DRIVE_FOLDER_NAME,
                     'mimeType': 'application/vnd.google-apps.folder'
@@ -106,12 +107,9 @@ class DataManager:
             st.error(f"Erro ao configurar Drive: {e}")
 
     def _make_file_public(self, file_id):
-        """Torna um arquivo público para leitura (necessário para st.image mostrar a foto)"""
+        """Torna um arquivo público para leitura"""
         try:
-            user_permission = {
-                'type': 'anyone',
-                'role': 'reader',
-            }
+            user_permission = {'type': 'anyone', 'role': 'reader'}
             self.drive_service.permissions().create(
                 fileId=file_id,
                 body=user_permission,
@@ -158,7 +156,6 @@ class DataManager:
                 worksheet = self.sheet.add_worksheet(title="Usuarios", rows=100, cols=10)
                 worksheet.append_row(["nome", "sobrenome", "telefone", "email", "senha"])
             
-            # Garante a ordem correta das colunas
             row = [user_data['nome'], user_data['sobrenome'], user_data['telefone'], user_data['email'], user_data['senha']]
             worksheet.append_row(row)
             
@@ -168,17 +165,14 @@ class DataManager:
         df = self.get_users()
         if df.empty: return None
         
-        # Filtra (ajustado para converter senha para string caso venha como int)
         if 'senha' in df.columns:
             df['senha'] = df['senha'].astype(str)
             user = df[(df['email'] == email) & (df['senha'] == str(password))]
-            
             if not user.empty:
                 return user.iloc[0].to_dict()
         return None
 
     def recover_password(self, email):
-        # Lógica de recuperação (igual anterior, requer SMTP configurado)
         return False, "Configure o email no backend.py para usar esta função."
 
     # --- GERENCIAMENTO DE ORÇAMENTOS ---
@@ -201,19 +195,13 @@ class DataManager:
                 return pd.DataFrame()
 
         if df.empty: return df
-        
         if user_email:
             return df[df['user_email'] == user_email]
         return df
 
     def save_budget(self, budget_data, images_files):
-        """
-        budget_data: dict com dados
-        images_files: lista de objetos UploadedFile do Streamlit
-        """
         image_links = []
         
-        # --- UPLOAD DE IMAGENS ---
         if images_files:
             for img in images_files:
                 if MOCK_MODE:
@@ -222,29 +210,20 @@ class DataManager:
                     with open(path, "wb") as f: f.write(img.getbuffer())
                     image_links.append(path)
                 else:
-                    # Upload real para o Google Drive
                     try:
                         file_metadata = {
                             'name': f"{budget_data['user_nome']}_{img.name}",
                             'parents': [self.drive_folder_id]
                         }
                         media = MediaIoBaseUpload(img, mimetype=img.type)
-                        
                         file = self.drive_service.files().create(
-                            body=file_metadata,
-                            media_body=media,
-                            fields='id, webContentLink, webViewLink'
+                            body=file_metadata, media_body=media, fields='id'
                         ).execute()
                         
                         file_id = file.get('id')
-                        
-                        # Torna publico para o app conseguir mostrar
                         self._make_file_public(file_id)
-                        
-                        # Usa o link de visualização direta
                         link = f"https://drive.google.com/uc?id={file_id}"
                         image_links.append(link)
-                        
                     except Exception as e:
                         st.error(f"Erro no upload da imagem {img.name}: {e}")
 
@@ -263,23 +242,16 @@ class DataManager:
                 worksheet = self.sheet.worksheet("Orcamentos")
             except:
                 worksheet = self.sheet.add_worksheet(title="Orcamentos", rows=1000, cols=10)
-                # Cabeçalho se for novo
                 worksheet.append_row(["id", "user_email", "user_nome", "localizacao", "medidas", "descricao", "status", "imagens", "data_criacao"])
             
-            # Ordena os valores para bater com o cabeçalho (importante!)
             row = [
-                budget_data.get('id', ''),
-                budget_data.get('user_email', ''),
-                budget_data.get('user_nome', ''),
-                budget_data.get('localizacao', ''),
-                budget_data.get('medidas', ''),
-                budget_data.get('descricao', ''),
-                budget_data.get('status', 'Pendente'),
-                budget_data.get('imagens', ''),
+                budget_data.get('id', ''), budget_data.get('user_email', ''),
+                budget_data.get('user_nome', ''), budget_data.get('localizacao', ''),
+                budget_data.get('medidas', ''), budget_data.get('descricao', ''),
+                budget_data.get('status', 'Pendente'), budget_data.get('imagens', ''),
                 budget_data.get('data_criacao', '')
             ]
             worksheet.append_row(row)
-            
         return True
 
     def update_budget(self, budget_id, new_data):
@@ -290,24 +262,14 @@ class DataManager:
                     item.update(new_data)
             with open(self.mock_budgets_file, 'w') as f: json.dump(data, f)
         else:
-            # Atualização no Sheets
             try:
                 worksheet = self.sheet.worksheet("Orcamentos")
-                # Busca a célula com o ID
                 cell = worksheet.find(str(budget_id))
                 if cell:
-                    # Mapeamento simples de colunas (assume ordem fixa por simplicidade)
-                    # Colunas: 1:id, 2:email, 3:nome, 4:loc, 5:med, 6:desc, 7:status...
-                    # Atualiza Status (Col 7)
-                    if 'status' in new_data:
-                        worksheet.update_cell(cell.row, 7, new_data['status'])
-                    if 'localizacao' in new_data:
-                        worksheet.update_cell(cell.row, 4, new_data['localizacao'])
-                    if 'medidas' in new_data:
-                        worksheet.update_cell(cell.row, 5, new_data['medidas'])
-                    if 'descricao' in new_data:
-                        worksheet.update_cell(cell.row, 6, new_data['descricao'])
+                    if 'status' in new_data: worksheet.update_cell(cell.row, 7, new_data['status'])
+                    if 'localizacao' in new_data: worksheet.update_cell(cell.row, 4, new_data['localizacao'])
+                    if 'medidas' in new_data: worksheet.update_cell(cell.row, 5, new_data['medidas'])
+                    if 'descricao' in new_data: worksheet.update_cell(cell.row, 6, new_data['descricao'])
             except Exception as e:
                 st.error(f"Erro ao atualizar: {e}")
-                
         return True
