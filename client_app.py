@@ -6,25 +6,27 @@ from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 
-# Configuração da Página
-st.set_page_config(page_title="Portal do Cliente | Orçamentos", page_icon="🏠")
+# Configuração da Página - CRÍTICO: Deve ser o primeiro comando
+st.set_page_config(page_title="Portal do Cliente", page_icon="🏠", layout="centered")
 
-# Instancia o banco de dados
-db = DataManager()
-
-# --- ESTILOS CSS ---
+# CSS para melhorar visualização no iPhone
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; border-radius: 5px; }
+    .stButton>button { width: 100%; border-radius: 8px; height: 50px; font-size: 16px; }
+    /* Ajuste para inputs no mobile não darem zoom automático */
+    input, textarea { font-size: 16px !important; }
     .success-msg { color: green; font-weight: bold; }
     .error-msg { color: red; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
+# Instancia o banco de dados
+db = DataManager()
+
 # --- GERENCIAMENTO DE ESTADO ---
 if 'page' not in st.session_state: st.session_state.page = 'login'
 if 'user' not in st.session_state: st.session_state.user = None
-if 'map_center' not in st.session_state: st.session_state.map_center = [-12.2716, -38.9631] # Centro de Feira de Santana (Exemplo)
+if 'map_center' not in st.session_state: st.session_state.map_center = [-12.2716, -38.9631]
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
 if 'selected_location_link' not in st.session_state: st.session_state.selected_location_link = ""
 if 'selected_address_text' not in st.session_state: st.session_state.selected_address_text = ""
@@ -36,16 +38,16 @@ def navigate_to(page):
 # --- FUNÇÕES AUXILIARES DE MAPA ---
 def get_address_from_coords(lat, lon):
     try:
-        geolocator = Nominatim(user_agent="app_orcamentos_melissa_v2")
-        location = geolocator.reverse(f"{lat}, {lon}", timeout=10)
+        geolocator = Nominatim(user_agent="app_melissa_safari_fix")
+        location = geolocator.reverse(f"{lat}, {lon}", timeout=5)
         return location.address if location else "Endereço não identificado"
     except:
         return "Endereço não identificado"
 
 def get_coords_from_address(address):
     try:
-        geolocator = Nominatim(user_agent="app_orcamentos_melissa_v2")
-        location = geolocator.geocode(address, timeout=10)
+        geolocator = Nominatim(user_agent="app_melissa_safari_fix")
+        location = geolocator.geocode(address, timeout=5)
         if location:
             return location.latitude, location.longitude
         return None
@@ -67,57 +69,50 @@ def login_screen():
     auth_mode = st.session_state.get('auth_mode', 'login')
 
     if auth_mode == 'login':
-        st.subheader("Acessar Sistema")
+        st.subheader("Login")
         email = st.text_input("Email")
         senha = st.text_input("Senha", type="password")
         
         if st.button("Entrar", type="primary"):
-            with st.spinner("Verificando..."):
+            with st.spinner("Conectando..."):
                 user = db.check_login(email, senha)
             if user:
                 st.session_state.user = user
                 navigate_to('home')
             else:
-                st.error("Email ou senha incorretos. (Verifique se cadastrou com este email)")
+                st.error("Dados incorretos.")
         
         if st.button("Esqueci a senha"):
-            st.session_state.page = 'forgot_password'
-            st.rerun()
+            navigate_to('forgot_password')
 
     elif auth_mode == 'register':
-        st.subheader("Novo Cadastro")
+        st.subheader("Cadastro")
         nome = st.text_input("Nome")
         sobrenome = st.text_input("Sobrenome")
         
         col_tel, col_dd = st.columns([3, 1])
         telefone = st.text_input("Telefone (Ex: 99999-9999)")
-        ddd = st.text_input("DDD (Ex: 11)", max_chars=2)
+        ddd = st.text_input("DDD", max_chars=2)
         
         email = st.text_input("Email")
         conf_email = st.text_input("Confirmar Email")
-        senha = st.text_input("Senha (Min 4 caracteres)", type="password")
+        senha = st.text_input("Senha", type="password")
         conf_senha = st.text_input("Confirmar Senha", type="password")
 
         if st.button("Cadastrar", type="primary"):
             if email != conf_email:
-                st.error("Emails não conferem.")
+                st.error("Emails diferentes.")
             elif senha != conf_senha:
-                st.error("Senhas não conferem.")
-            elif len(senha) < 4:
-                st.error("Senha muito curta.")
-            elif not nome or not sobrenome or not telefone or not ddd:
-                st.error("Preencha todos os campos.")
+                st.error("Senhas diferentes.")
+            elif not nome or not telefone:
+                st.error("Preencha tudo.")
             else:
                 full_phone = f"55{ddd}{telefone.replace('-','').replace(' ','')}"
-                user_data = {
-                    "nome": nome, "sobrenome": sobrenome, 
-                    "telefone": full_phone, "email": email, "senha": senha
-                }
-                with st.spinner("Salvando cadastro..."):
-                    success, msg = db.register_user(user_data)
+                user_data = {"nome": nome, "sobrenome": sobrenome, "telefone": full_phone, "email": email, "senha": senha}
+                success, msg = db.register_user(user_data)
                 if success:
                     st.success(msg)
-                    time.sleep(2)
+                    time.sleep(1)
                     st.session_state.auth_mode = 'login'
                     st.rerun()
                 else:
@@ -125,30 +120,27 @@ def login_screen():
 
 def forgot_password_screen():
     st.subheader("Recuperar Senha")
-    email = st.text_input("Digite seu email cadastrado")
+    email = st.text_input("Seu email")
     if st.button("Recuperar"):
-        with st.spinner("Enviando email..."):
-            success, msg = db.recover_password(email)
+        success, msg = db.recover_password(email)
         if success: st.success(msg)
         else: st.error(msg)
-    
-    if st.button("Voltar ao Login"): navigate_to('login')
+    if st.button("Voltar"): navigate_to('login')
 
 def home_screen():
-    st.title(f"Olá, {st.session_state.user['nome']}!")
+    st.title(f"Olá, {st.session_state.user['nome']}")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("➕ Novo Orçamento", type="primary", use_container_width=True):
-            # Reseta o mapa ao iniciar novo orcamento
-            st.session_state.map_center = [-12.2716, -38.9631]
-            st.session_state.map_zoom = 13
-            st.session_state.selected_location_link = ""
-            st.session_state.selected_address_text = ""
-            navigate_to('new_budget')
-    with col2:
-        if st.button("📋 Meus Pedidos", use_container_width=True):
-            navigate_to('history')
+    # Botões grandes para facilitar toque no celular
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("➕ NOVO ORÇAMENTO", type="primary", use_container_width=True):
+        st.session_state.map_center = [-12.2716, -38.9631]
+        st.session_state.selected_location_link = ""
+        st.session_state.selected_address_text = ""
+        navigate_to('new_budget')
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("📋 MEUS PEDIDOS", use_container_width=True):
+        navigate_to('history')
             
     st.divider()
     if st.button("Sair"):
@@ -156,95 +148,70 @@ def home_screen():
         navigate_to('login')
 
 def new_budget_screen():
-    st.subheader("Solicitar Novo Orçamento")
+    st.subheader("Novo Orçamento")
     
-    st.markdown("### 1. Localização do Terreno")
-    st.info("Digite o nome da rua/cidade abaixo e clique em 'Buscar'. Depois, clique no ponto exato no mapa.")
+    st.markdown("##### 1. Onde é o terreno?")
     
-    col_search, col_btn = st.columns([4, 1])
+    col_search, col_btn = st.columns([3, 1])
     with col_search:
-        search_query = st.text_input("Pesquisar endereço", placeholder="Ex: Av. Getúlio Vargas, Feira de Santana", label_visibility="collapsed")
+        search_query = st.text_input("Busca", placeholder="Ex: Rua A, Feira de Santana", label_visibility="collapsed")
     with col_btn:
-        btn_buscar = st.button("🔍 Buscar")
+        btn_buscar = st.button("🔍 Ir")
 
     if btn_buscar and search_query:
-        with st.spinner("Buscando..."):
-            coords = get_coords_from_address(search_query)
-            if coords:
-                st.session_state.map_center = [coords[0], coords[1]]
-                st.session_state.map_zoom = 18
-            else:
-                st.warning("Endereço não encontrado. Tente ser mais específico.")
+        coords = get_coords_from_address(search_query)
+        if coords:
+            st.session_state.map_center = [coords[0], coords[1]]
+            st.session_state.map_zoom = 18
+        else:
+            st.warning("Não encontrado.")
 
-    # Criação do Mapa com visual "Google Híbrido" (Satélite + Ruas)
-    m = folium.Map(
-        location=st.session_state.map_center, 
-        zoom_start=st.session_state.map_zoom,
-        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
-        attr="Google Maps"
-    )
-    
-    # Adiciona marcador se já tiver selecionado algo
-    if st.session_state.selected_location_link:
-        # Extrai lat/lon do estado atual para mostrar o marcador
-        folium.Marker(
-            st.session_state.map_center, 
-            popup="Local Selecionado", 
-            icon=folium.Icon(color="red", icon="map-marker", prefix='fa')
-        ).add_to(m)
+    # Mapa Protegido para Mobile
+    try:
+        m = folium.Map(
+            location=st.session_state.map_center, 
+            zoom_start=st.session_state.map_zoom,
+            tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+            attr="Google Maps"
+        )
+        if st.session_state.selected_location_link:
+            folium.Marker(st.session_state.map_center, icon=folium.Icon(color="red")).add_to(m)
 
-    # Exibe o mapa e captura o clique
-    st.markdown("**Clique no mapa para confirmar o local:**")
-    map_data = st_folium(m, height=450, width="100%")
+        # width=100% é crucial para mobile
+        map_data = st_folium(m, height=350, width="100%")
 
-    # Lógica ao Clicar no Mapa
-    if map_data.get("last_clicked"):
-        lat = map_data["last_clicked"]["lat"]
-        lng = map_data["last_clicked"]["lng"]
-        
-        # Verifica se mudou a posição para evitar recarregar sem necessidade
-        # Usamos uma pequena tolerância float
-        if abs(lat - st.session_state.map_center[0]) > 0.00001 or abs(lng - st.session_state.map_center[1]) > 0.00001:
-            st.session_state.map_center = [lat, lng]
+        if map_data and map_data.get("last_clicked"):
+            lat = map_data["last_clicked"]["lat"]
+            lng = map_data["last_clicked"]["lng"]
             
-            # Gera o link do Google Maps LIMPO (sem texto extra)
-            gmaps_link = f"https://www.google.com/maps?q={lat},{lng}"
-            
-            # Busca o endereço para mostrar na tela (apenas visualização)
-            address_name = get_address_from_coords(lat, lng)
-            
-            st.session_state.selected_location_link = gmaps_link
-            st.session_state.selected_address_text = address_name
-            st.rerun()
+            if abs(lat - st.session_state.map_center[0]) > 0.0001 or abs(lng - st.session_state.map_center[1]) > 0.0001:
+                st.session_state.map_center = [lat, lng]
+                st.session_state.selected_location_link = f"https://www.google.com/maps?q={lat},{lng}"
+                st.session_state.selected_address_text = get_address_from_coords(lat, lng)
+                st.rerun()
+    except Exception as e:
+        st.error("Erro ao carregar mapa no dispositivo. Digite o endereço abaixo.")
 
-    # Mostra o endereço encontrado apenas como texto informativo
     if st.session_state.selected_address_text:
-        st.caption(f"📍 Endereço aproximado: {st.session_state.selected_address_text}")
+        st.caption(f"📍 {st.session_state.selected_address_text}")
 
-    # Formulário Principal
     with st.form("budget_form"):
-        # Campo de localização recebe APENAS o link (corrige o erro do print)
-        localizacao = st.text_input("Link da Localização", 
+        localizacao = st.text_input("Link / Localização", 
                                   value=st.session_state.selected_location_link,
-                                  placeholder="Selecione no mapa acima para preencher automaticamente",
-                                  help="Este é o link exato que usaremos para visitar seu terreno.")
+                                  placeholder="Toque no mapa ou cole um link")
         
-        st.markdown("---")
-        medidas = st.text_input("2. Medidas do Terreno", placeholder="Ex: 10m frente x 20m fundo")
+        medidas = st.text_input("2. Medidas", placeholder="Ex: 10x20")
         
-        st.markdown("3. Fotos do Terreno (Opcional - Máx 4)")
-        fotos = st.file_uploader("Envie as fotos", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
-        if len(fotos) > 4:
-            st.warning("Máximo de 4 fotos permitidas. Apenas as 4 primeiras serão enviadas.")
-            fotos = fotos[:4]
-
-        descricao = st.text_area("4. O que você deseja fazer?", placeholder="Descreva sua ideia: casa, muro, reforma, quantidade de quartos...")
+        st.markdown("3. Fotos (Opcional)")
+        fotos = st.file_uploader("Fotos", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'], label_visibility="collapsed")
         
-        submitted = st.form_submit_button("Enviar Solicitação", type="primary")
+        descricao = st.text_area("4. O que vamos construir?", placeholder="Descreva sua ideia...", height=150)
+        
+        submitted = st.form_submit_button("ENVIAR PEDIDO", type="primary")
         
         if submitted:
             if not localizacao or not medidas or not descricao:
-                st.error("Por favor, preencha a Localização (clicando no mapa), as Medidas e a Descrição.")
+                st.error("Preencha Localização, Medidas e Descrição.")
             else:
                 data = {
                     "user_email": st.session_state.user['email'],
@@ -254,82 +221,37 @@ def new_budget_screen():
                     "descricao": descricao,
                     "status": "Pendente"
                 }
-                with st.spinner("Enviando informações e fazendo upload das fotos..."):
-                    db.save_budget(data, fotos)
-                st.success("Orçamento enviado com sucesso!")
+                with st.spinner("Enviando..."):
+                    db.save_budget(data, fotos[:4] if fotos else [])
+                st.success("Enviado!")
                 time.sleep(2)
                 navigate_to('home')
 
-    if st.button("Cancelar / Voltar"): navigate_to('home')
+    if st.button("Cancelar"): navigate_to('home')
 
 def history_screen():
-    st.subheader("Histórico de Orçamentos")
-    
-    with st.spinner("Carregando seus pedidos..."):
-        budgets = db.get_budgets(st.session_state.user['email'])
+    st.subheader("Meus Pedidos")
+    budgets = db.get_budgets(st.session_state.user['email'])
     
     if budgets.empty:
-        st.info("Você ainda não fez nenhum pedido.")
+        st.info("Nenhum pedido.")
     else:
-        st.dataframe(budgets[['data_criacao', 'status', 'descricao']], use_container_width=True)
-        
-        opts = budgets['id'].astype(str).tolist()
-        selection = st.selectbox("Selecione um pedido para ver detalhes ou editar:", ["Selecione..."] + opts)
-        
-        if selection != "Selecione...":
-            item = budgets[budgets['id'].astype(str) == str(selection)].iloc[0]
-            
-            st.divider()
-            st.write(f"**Status:** {item['status']}")
-            
-            # Modo de Edição
-            if 'edit_mode' not in st.session_state: st.session_state.edit_mode = False
-            
-            if not st.session_state.edit_mode:
-                st.markdown(f"**Localização:** [Abrir no Mapa]({item['localizacao']})")
-                st.text(f"Link: {item['localizacao']}")
-
-                st.write(f"**Medidas:** {item['medidas']}")
-                st.write(f"**Descrição:** {item['descricao']}")
-                
-                if item['imagens']:
-                    imgs = item['imagens'].split(" | ")
-                    st.markdown("**Fotos enviadas:**")
-                    cols = st.columns(4)
-                    for i, img_path in enumerate(imgs):
-                        if img_path:
-                            with cols[i % 4]:
-                                st.image(img_path, use_container_width=True)
-
-                if st.button("✏️ Editar Informações"):
-                    st.session_state.edit_mode = True
-                    st.rerun()
-            
-            else:
-                st.warning("⚠️ Você tem alterações não salvas.")
-                with st.form("edit_form"):
-                    new_loc = st.text_input("Localização", value=item['localizacao'])
-                    new_med = st.text_input("Medidas", value=item['medidas'])
-                    new_desc = st.text_area("Descrição", value=item['descricao'])
-                    
-                    if st.form_submit_button("💾 Salvar Alterações"):
-                        db.update_budget(item['id'], {
-                            "localizacao": new_loc,
-                            "medidas": new_med,
-                            "descricao": new_desc
-                        })
-                        st.success("Salvo!")
-                        st.session_state.edit_mode = False
-                        time.sleep(1)
-                        st.rerun()
-                
-                if st.button("Cancelar Edição"):
-                    st.session_state.edit_mode = False
-                    st.rerun()
+        for idx, row in budgets.iterrows():
+            with st.expander(f"{row['data_criacao'][:10]} - {row['status']}"):
+                st.write(f"**Local:** {row['localizacao']}")
+                st.write(f"**Medidas:** {row['medidas']}")
+                st.write(f"**Desc:** {row['descricao']}")
+                if row['imagens']:
+                    st.write("**Fotos:**")
+                    imgs = row['imagens'].split(" | ")
+                    cols = st.columns(3)
+                    for i, img in enumerate(imgs):
+                        if img: 
+                            with cols[i%3]: st.image(img, use_container_width=True)
 
     if st.button("Voltar"): navigate_to('home')
 
-# --- ROTEAMENTO PRINCIPAL ---
+# ROTEAMENTO
 if st.session_state.page == 'login': login_screen()
 elif st.session_state.page == 'forgot_password': forgot_password_screen()
 elif st.session_state.page == 'home': home_screen()
