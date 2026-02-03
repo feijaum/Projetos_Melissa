@@ -28,6 +28,9 @@ EMAIL_PASSWORD = "sua_senha_de_app"       # <--- PREENCHA AQUI SUA SENHA DE APP
 
 class DataManager:
     def __init__(self):
+        # CORREÇÃO: Declarar global no início do método para evitar SyntaxError
+        global MOCK_MODE
+        
         self.mock_users_file = 'local_users.json'
         self.mock_budgets_file = 'local_budgets.json'
         self.drive_folder_id = None
@@ -41,10 +44,16 @@ class DataManager:
                     'https://www.googleapis.com/auth/drive'
                 ]
                 
+                # Verifica se o arquivo existe
                 if not os.path.exists(GOOGLE_CREDENTIALS_FILE):
-                    raise FileNotFoundError(f"Arquivo '{GOOGLE_CREDENTIALS_FILE}' não encontrado.")
-
-                self.creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
+                    # Se não existir arquivo, tenta usar st.secrets (caso esteja na nuvem)
+                    if "gcp_service_account" in st.secrets:
+                        service_account_info = st.secrets["gcp_service_account"]
+                        self.creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
+                    else:
+                        raise FileNotFoundError(f"Arquivo '{GOOGLE_CREDENTIALS_FILE}' não encontrado e secrets não configurados.")
+                else:
+                    self.creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scope)
                 
                 # Cliente do Sheets (gspread)
                 self.client = gspread.authorize(self.creds)
@@ -58,15 +67,12 @@ class DataManager:
                 except gspread.SpreadsheetNotFound:
                     # Se não achar a planilha, cria uma nova
                     self.sheet = self.client.create(SHEET_NAME)
-                    # Compartilha com seu email pessoal (opcional, para você ver no seu Drive)
-                    # self.sheet.share('seu_email_pessoal@gmail.com', perm_type='user', role='writer')
 
                 # Configura a pasta do Drive
                 self._setup_drive_folder()
 
             except Exception as e:
                 st.error(f"Erro ao conectar com Google: {e}. Usando modo OFFLINE temporariamente.")
-                global MOCK_MODE
                 MOCK_MODE = True
                 self._init_local_db()
         else:
@@ -94,8 +100,6 @@ class DataManager:
                 }
                 file = self.drive_service.files().create(body=file_metadata, fields='id').execute()
                 self.drive_folder_id = file.get('id')
-                # Torna a pasta pública para leitura (opcional, facilita visualização)
-                # self._make_file_public(self.drive_folder_id)
             else:
                 self.drive_folder_id = files[0]['id']
         except Exception as e:
@@ -165,11 +169,12 @@ class DataManager:
         if df.empty: return None
         
         # Filtra (ajustado para converter senha para string caso venha como int)
-        df['senha'] = df['senha'].astype(str)
-        user = df[(df['email'] == email) & (df['senha'] == str(password))]
-        
-        if not user.empty:
-            return user.iloc[0].to_dict()
+        if 'senha' in df.columns:
+            df['senha'] = df['senha'].astype(str)
+            user = df[(df['email'] == email) & (df['senha'] == str(password))]
+            
+            if not user.empty:
+                return user.iloc[0].to_dict()
         return None
 
     def recover_password(self, email):
@@ -237,8 +242,6 @@ class DataManager:
                         self._make_file_public(file_id)
                         
                         # Usa o link de visualização direta
-                        # webContentLink geralmente força download, vamos tentar construir link de thumbnail ou view
-                        # Para imagens funcionarem no st.image, o melhor é o link de exportação ou thumbnail grande
                         link = f"https://drive.google.com/uc?id={file_id}"
                         image_links.append(link)
                         
