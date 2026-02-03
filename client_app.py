@@ -1,11 +1,15 @@
 import streamlit as st
 from backend import DataManager
 import time
+import folium
+from streamlit_folium import st_folium
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 
 # Configuração da Página
 st.set_page_config(page_title="Portal do Cliente | Orçamentos", page_icon="🏠")
 
-# Instancia o banco de dados (Isso já vai testar a conexão com o Google)
+# Instancia o banco de dados
 db = DataManager()
 
 # --- ESTILOS CSS ---
@@ -20,10 +24,32 @@ st.markdown("""
 # --- GERENCIAMENTO DE ESTADO ---
 if 'page' not in st.session_state: st.session_state.page = 'login'
 if 'user' not in st.session_state: st.session_state.user = None
+if 'map_center' not in st.session_state: st.session_state.map_center = [-14.2350, -51.9253] # Centro do Brasil
+if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 4
+if 'selected_location_text' not in st.session_state: st.session_state.selected_location_text = ""
 
 def navigate_to(page):
     st.session_state.page = page
     st.rerun()
+
+# --- FUNÇÕES AUXILIARES DE MAPA ---
+def get_address_from_coords(lat, lon):
+    try:
+        geolocator = Nominatim(user_agent="app_orcamentos_melissa")
+        location = geolocator.reverse(f"{lat}, {lon}", timeout=10)
+        return location.address if location else f"{lat}, {lon}"
+    except:
+        return f"Coordenadas: {lat}, {lon}"
+
+def get_coords_from_address(address):
+    try:
+        geolocator = Nominatim(user_agent="app_orcamentos_melissa")
+        location = geolocator.geocode(address, timeout=10)
+        if location:
+            return location.latitude, location.longitude
+        return None
+    except:
+        return None
 
 # --- TELAS ---
 
@@ -100,7 +126,8 @@ def forgot_password_screen():
     st.subheader("Recuperar Senha")
     email = st.text_input("Digite seu email cadastrado")
     if st.button("Recuperar"):
-        success, msg = db.recover_password(email)
+        with st.spinner("Enviando email..."):
+            success, msg = db.recover_password(email)
         if success: st.success(msg)
         else: st.error(msg)
     
@@ -112,6 +139,10 @@ def home_screen():
     col1, col2 = st.columns(2)
     with col1:
         if st.button("➕ Novo Orçamento", type="primary", use_container_width=True):
+            # Reseta o mapa ao iniciar novo orcamento
+            st.session_state.map_center = [-14.2350, -51.9253]
+            st.session_state.map_zoom = 4
+            st.session_state.selected_location_text = ""
             navigate_to('new_budget')
     with col2:
         if st.button("📋 Meus Pedidos", use_container_width=True):
@@ -125,9 +156,63 @@ def home_screen():
 def new_budget_screen():
     st.subheader("Solicitar Novo Orçamento")
     
-    with st.form("budget_form"):
-        localizacao = st.text_input("1. Localização Exata (Cole o Link do Google Maps)", help="Abra o Maps, clique no local e copie o link.")
+    # --- LÓGICA DO MAPA ---
+    st.markdown("### 1. Localização do Terreno")
+    st.info("Pesquise sua cidade/rua ou clique no mapa para marcar o local exato.")
+    
+    search_query = st.text_input("🔍 Pesquisar endereço (Ex: Rua das Flores, São Paulo)", key="search_box")
+    
+    # Botão de busca manual para atualizar o centro do mapa
+    if st.button("Buscar no Mapa") and search_query:
+        coords = get_coords_from_address(search_query)
+        if coords:
+            st.session_state.map_center = [coords[0], coords[1]]
+            st.session_state.map_zoom = 16
+        else:
+            st.warning("Endereço não encontrado.")
+
+    # Criação do Mapa
+    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom)
+    
+    # Adiciona marcador se já tiver selecionado algo
+    if st.session_state.selected_location_text:
+        # Tenta extrair lat/long do link se possível, ou usa o centro atual
+        folium.Marker(
+            st.session_state.map_center, 
+            popup="Local Selecionado", 
+            icon=folium.Icon(color="green", icon="check")
+        ).add_to(m)
+
+    # Exibe o mapa e captura o clique
+    map_data = st_folium(m, height=400, width=700)
+
+    # Lógica ao Clicar no Mapa
+    if map_data.get("last_clicked"):
+        lat = map_data["last_clicked"]["lat"]
+        lng = map_data["last_clicked"]["lng"]
         
+        # Atualiza o estado apenas se mudou (para evitar loop)
+        if [lat, lng] != st.session_state.map_center:
+            st.session_state.map_center = [lat, lng]
+            st.session_state.map_zoom = 18 # Aproxima ao clicar
+            
+            # Gera o link do Google Maps
+            gmaps_link = f"https://www.google.com/maps?q={lat},{lng}"
+            
+            # Tenta pegar o nome da rua
+            address_name = get_address_from_coords(lat, lng)
+            
+            st.session_state.selected_location_text = f"{gmaps_link} | ({address_name})"
+            st.rerun()
+
+    # Formulário Principal
+    with st.form("budget_form"):
+        # Campo de localização preenchido automaticamente
+        localizacao = st.text_input("Link da Localização (Preenchido pelo mapa)", 
+                                  value=st.session_state.selected_location_text,
+                                  placeholder="Clique no mapa acima para preencher automaticamente")
+        
+        st.markdown("---")
         medidas = st.text_input("2. Medidas do Terreno", placeholder="Ex: 10m frente x 20m fundo")
         
         st.markdown("3. Fotos do Terreno (Opcional - Máx 4)")
@@ -142,7 +227,7 @@ def new_budget_screen():
         
         if submitted:
             if not localizacao or not medidas or not descricao:
-                st.error("Preencha todos os campos obrigatórios.")
+                st.error("Preencha todos os campos obrigatórios (Não esqueça de selecionar o local no mapa).")
             else:
                 data = {
                     "user_email": st.session_state.user['email'],
@@ -175,7 +260,6 @@ def history_screen():
         selection = st.selectbox("Selecione um pedido para ver detalhes ou editar:", ["Selecione..."] + opts)
         
         if selection != "Selecione...":
-            # Filtra o dataframe para pegar o item certo
             item = budgets[budgets['id'].astype(str) == str(selection)].iloc[0]
             
             st.divider()
@@ -185,17 +269,21 @@ def history_screen():
             if 'edit_mode' not in st.session_state: st.session_state.edit_mode = False
             
             if not st.session_state.edit_mode:
-                st.write(f"**Localização:** {item['localizacao']}")
+                # Tenta mostrar link clicavel
+                st.markdown(f"**Localização:** {item['localizacao']}")
+                if "http" in item['localizacao']:
+                    link_url = item['localizacao'].split("|")[0].strip()
+                    st.markdown(f"[Abrir no Google Maps]({link_url})")
+
                 st.write(f"**Medidas:** {item['medidas']}")
                 st.write(f"**Descrição:** {item['descricao']}")
                 
-                # Grid de Imagens
                 if item['imagens']:
                     imgs = item['imagens'].split(" | ")
                     st.markdown("**Fotos enviadas:**")
                     cols = st.columns(4)
                     for i, img_path in enumerate(imgs):
-                        if img_path: # Check se não é vazio
+                        if img_path:
                             with cols[i % 4]:
                                 st.image(img_path, use_container_width=True)
 
